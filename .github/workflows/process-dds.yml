@@ -1,0 +1,86 @@
+name: Batch process DDS assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        description: "Model name label stored in the manifest"
+        required: false
+        default: "custom-model"
+      model_cmd:
+        description: "Command template using {input} and {output} placeholders"
+        required: false
+        default: "python -m your_upscaler --input {input} --output {output}"
+      output_dir:
+        description: "Output directory for processed DDS files"
+        required: false
+        default: "output"
+      overwrite:
+        description: "Overwrite existing outputs"
+        required: false
+        type: boolean
+        default: false
+      git_commit:
+        description: "Commit artifacts after processing"
+        required: false
+        type: boolean
+        default: false
+      git_push:
+        description: "Push the commit to the remote"
+        required: false
+        type: boolean
+        default: false
+      git_remote:
+        description: "Remote name to push to"
+        required: false
+        default: "origin"
+      git_branch:
+        description: "Branch name to push to"
+        required: false
+        default: "main"
+      commit_message:
+        description: "Commit message when git_commit is enabled"
+        required: false
+        default: "Update processed DDS assets"
+
+permissions:
+  contents: write
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure git identity
+        if: inputs.git_commit || inputs.git_push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Process DDS files
+        env:
+          DDS_MODEL_NAME: ${{ inputs.model_name }}
+          DDS_MODEL_CMD: ${{ inputs.model_cmd }}
+          DDS_OUTPUT_DIR: ${{ inputs.output_dir }}
+          DDS_GIT_REMOTE: ${{ inputs.git_remote }}
+          DDS_GIT_BRANCH: ${{ inputs.git_branch }}
+        run: |
+          set -euo pipefail
+          FLAGS=("--input" "texture" "--output" "${DDS_OUTPUT_DIR}" "--model-name" "${DDS_MODEL_NAME}" "--model-cmd" "${DDS_MODEL_CMD}")
+          if [ "${{ inputs.overwrite }}" = "true" ]; then
+            FLAGS+=("--overwrite")
+          fi
+          if [ "${{ inputs.git_commit }}" = "true" ]; then
+            FLAGS+=("--git-commit" "--commit-message" "${{ inputs.commit_message }}")
+          fi
+          if [ "${{ inputs.git_push }}" = "true" ]; then
+            FLAGS+=("--git-push" "--git-remote" "${DDS_GIT_REMOTE}" "--git-branch" "${DDS_GIT_BRANCH}")
+          fi
+          python scripts/batch_process_dds.py "${FLAGS[@]}"

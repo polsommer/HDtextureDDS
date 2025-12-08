@@ -1,1 +1,109 @@
 # HDtextureDDS
+
+Batch processing and upscaling helpers for the DDS texture collection contained
+in this repository. Use the provided script, GitHub Actions workflow, and Slurm
+job template to automate runs locally, in CI, or on the SWG-RPI-Cluster.
+
+## Batch-processing script
+
+`scripts/batch_process_dds.py` scans the `texture/` directory (or a custom
+input) for `.dds` files, runs them through a model command, and mirrors the
+outputs into a dedicated output directory. A `processing_manifest.json` is
+written alongside the results to capture run metadata.
+
+Example (copy-only fallback):
+
+```bash
+python scripts/batch_process_dds.py \
+  --input texture \
+  --output output \
+  --model-name custom-model
+```
+
+Example (external upscaler command):
+
+```bash
+export DDS_MODEL_CMD="python -m your_upscaler --input {input} --output {output}"
+python scripts/batch_process_dds.py --input texture --output output --model-name esrgan
+```
+
+Optional git automation (requires `git config user.name`/`user.email`):
+
+```bash
+python scripts/batch_process_dds.py --output output --git-commit --git-push \
+  --git-remote origin --git-branch main --commit-message "Add processed DDS"
+```
+
+Key flags:
+
+- `--model-cmd`: Command template using `{input}` and `{output}` placeholders.
+- `--overwrite`: Replace existing files in the output tree.
+- `--dry-run`: Print planned commands without executing them.
+- `--git-commit/--git-push`: Optional archival of outputs back to GitHub.
+
+The script respects several environment variables (CLI flags take priority):
+
+- `DDS_MODEL_CMD`: Default model command template.
+- `DDS_MODEL_NAME`: Label stored in the manifest for the model used.
+- `DDS_OUTPUT_DIR`: Default output folder (defaults to `output/`).
+- `DDS_GIT_REMOTE` / `DDS_GIT_BRANCH`: Defaults for push targets.
+- `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`: Recommended when committing in CI.
+- `GITHUB_TOKEN`: Required by GitHub Actions when push is requested.
+
+## GitHub Actions workflow
+
+`.github/workflows/process-dds.yml` exposes a `workflow_dispatch` entrypoint so
+runs are manual and configurable. Inputs include the model command, output
+folder, overwrite toggle, and git commit/push options. The workflow:
+
+1. Checks out the repo and prepares Python 3.11.
+2. Configures git identity when commits/pushes are requested.
+3. Invokes `scripts/batch_process_dds.py` with the provided inputs. Set
+   `model_cmd` to the full processing CLI (must contain `{input}` and
+   `{output}` placeholders) and ensure `GITHUB_TOKEN` has `contents:write`
+   permissions when enabling pushes.
+
+## SWG-RPI-Cluster job template
+
+`cluster/swg_rpi_job.sh` is a Slurm submission script tuned for the
+SWG-RPI-Cluster GPU partition. Default resources request 1 GPU, 8 CPUs, 32 GB
+RAM, and an 8-hour wall clock. Edit the `#SBATCH` lines as needed.
+
+Usage:
+
+```bash
+# Optional: point to an existing virtual environment
+export DDS_VENV="$HOME/venvs/dds"
+
+# Configure model invocation and destination
+export DDS_MODEL_NAME="esrgan"
+export DDS_MODEL_CMD="python -m your_upscaler --input {input} --output {output}"
+export DDS_OUTPUT_DIR="$PWD/output"
+export DDS_OVERWRITE=1  # optional
+
+# Optional git archival
+export DDS_GIT_COMMIT=1
+export DDS_GIT_PUSH=1
+export DDS_GIT_REMOTE=origin
+export DDS_GIT_BRANCH=main
+export GIT_AUTHOR_NAME="Cluster Bot"
+export GIT_AUTHOR_EMAIL="bot@example.com"
+
+sbatch cluster/swg_rpi_job.sh
+```
+
+Dependencies on the cluster:
+
+- Python 3.10+ (loaded via `module load python/3.10`).
+- CUDA drivers/modules appropriate for your upscaler (`module load cuda/11.7`).
+- Any model-specific wheels or binaries available in the active environment
+  (`DDS_VENV` is respected when set).
+- Git credentials if committing/pushing from the job (e.g., SSH agent or
+  `GITHUB_TOKEN` with `git remote set-url`).
+
+## Output and manifests
+
+Processed files mirror the input directory structure under the chosen output
+folder. Each run produces `processing_manifest.json` capturing timestamps,
+model metadata, and per-file status (ok/skipped/error) to assist with audits and
+reruns.
