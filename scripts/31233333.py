@@ -7,9 +7,12 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
+import tkinter as tk
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import List, Optional, Tuple
 
 
@@ -29,6 +32,10 @@ def base_dir() -> Path:
 def pause(enabled: bool):
     if enabled or frozen():
         input("\nPress Enter to exit...")
+
+
+def format_path(value: str) -> str:
+    return str(Path(value).expanduser().resolve())
 
 
 # ==========================================================
@@ -144,6 +151,7 @@ def parse_args():
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--pause", action="store_true")
+    p.add_argument("--gui", action="store_true", help="Launch the Tkinter interface")
     return p.parse_args()
 
 
@@ -210,11 +218,9 @@ def png_to_dds(texconv: Path, src_png: Path, out_dir: Path, dds_format: str, dry
 
 
 # ==========================================================
-# MAIN
+# MAIN (CLI)
 # ==========================================================
-def main() -> int:
-    args = parse_args()
-
+def run_pipeline(args) -> int:
     try:
         texconv, realesrgan, models = ensure_tools(args.tools)
     except Exception as exc:
@@ -311,6 +317,241 @@ def main() -> int:
 
     pause(args.pause)
     return 0 if errors == 0 else 2
+
+
+# ==========================================================
+# UI
+# ==========================================================
+class ProcessingUI(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("DDS → AI → DDS")
+        self.geometry("920x720")
+        self.configure(background="#101820")
+
+        defaults = base_dir()
+        self.input_var = tk.StringVar(value=format_path(defaults / "texture"))
+        self.output_var = tk.StringVar(value=format_path(defaults / "output"))
+        self.tools_var = tk.StringVar(value=format_path(defaults / "tools"))
+        self.model_var = tk.StringVar(value="realesrgan-x4plus")
+        self.gpu_var = tk.IntVar(value=0)
+        self.max_dim_var = tk.IntVar(value=4096)
+        self.overwrite_var = tk.BooleanVar(value=False)
+        self.dry_run_var = tk.BooleanVar(value=False)
+        self.pause_var = tk.BooleanVar(value=False)
+
+        self.status_var = tk.StringVar(value="Idle")
+        self.process: Optional[subprocess.Popen[str]] = None
+        self.reader_thread: Optional[threading.Thread] = None
+        self.stop_requested = False
+
+        self._configure_styles()
+        self._build_layout()
+        self._set_idle_state()
+
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        style.configure("App.TFrame", background="#101820")
+        style.configure("App.TLabelframe", background="#101820", foreground="#c7ced4")
+        style.configure("App.TLabelframe.Label", foreground="#4a90e2")
+        style.configure("App.TLabel", background="#101820", foreground="#c7ced4")
+        style.configure("App.TButton", background="#4a90e2", foreground="white", padding=6)
+        style.map(
+            "App.TButton",
+            background=[("active", "#377ccf"), ("disabled", "#4a90e24d")],
+            foreground=[("disabled", "#f0f4f8")],
+        )
+
+    def _build_layout(self) -> None:
+        container = ttk.Frame(self, padding=16, style="App.TFrame")
+        container.pack(fill=tk.BOTH, expand=True)
+
+        header = ttk.Frame(container, style="App.TFrame")
+        header.pack(fill=tk.X, pady=(0, 12))
+        ttk.Label(header, text="DDS Batch Upscaler", font=("Segoe UI", 16, "bold"), style="App.TLabel").pack(
+            anchor=tk.W
+        )
+        ttk.Label(
+            header,
+            text="Convert DDS → PNG, upscale with Real-ESRGAN, then write DDS outputs.",
+            style="App.TLabel",
+        ).pack(anchor=tk.W)
+
+        paths = ttk.LabelFrame(container, text="Paths", padding=10, style="App.TLabelframe")
+        paths.pack(fill=tk.X, expand=False, pady=(0, 10))
+        self._add_path_row(paths, "Input", self.input_var)
+        self._add_path_row(paths, "Output", self.output_var)
+        self._add_path_row(paths, "Tools", self.tools_var)
+
+        settings = ttk.LabelFrame(container, text="Settings", padding=10, style="App.TLabelframe")
+        settings.pack(fill=tk.X, expand=False, pady=(0, 10))
+        self._add_entry(settings, "Model", self.model_var)
+        self._add_entry(settings, "GPU", self.gpu_var)
+        self._add_entry(settings, "Max dimension", self.max_dim_var)
+
+        flags = ttk.Frame(container, style="App.TFrame")
+        flags.pack(fill=tk.X, expand=False, pady=(0, 10))
+        ttk.Checkbutton(flags, text="Overwrite", variable=self.overwrite_var).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(flags, text="Dry run", variable=self.dry_run_var).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(flags, text="Pause on finish", variable=self.pause_var).pack(side=tk.LEFT, padx=4)
+
+        status_frame = ttk.Frame(container, style="App.TFrame")
+        status_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
+        ttk.Label(status_frame, text="Status:", style="App.TLabel").pack(side=tk.LEFT)
+        self.status_label = ttk.Label(status_frame, textvariable=self.status_var, style="App.TLabel")
+        self.status_label.pack(side=tk.LEFT, padx=6)
+
+        logs = ttk.LabelFrame(container, text="Logs", padding=10, style="App.TLabelframe")
+        logs.pack(fill=tk.BOTH, expand=True)
+        self.log_widget = scrolledtext.ScrolledText(
+            logs,
+            height=18,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            background="#0f1620",
+            foreground="#e5eef5",
+            insertbackground="#4a90e2",
+        )
+        self.log_widget.pack(fill=tk.BOTH, expand=True)
+
+        controls = ttk.Frame(container, style="App.TFrame")
+        controls.pack(fill=tk.X, pady=(10, 0))
+        self.start_button = ttk.Button(controls, text="Start", command=self.start_processing, style="App.TButton")
+        self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.stop_button = ttk.Button(controls, text="Stop", command=self.stop_processing, style="App.TButton")
+        self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def _add_path_row(self, parent: ttk.Frame, label: str, variable: tk.StringVar) -> None:
+        row = ttk.Frame(parent, style="App.TFrame")
+        row.pack(fill=tk.X, pady=3)
+        ttk.Label(row, text=label, width=12, style="App.TLabel").pack(side=tk.LEFT)
+        entry = ttk.Entry(row, textvariable=variable)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(row, text="Browse", command=lambda: self._choose_dir(variable), style="App.TButton").pack(
+            side=tk.LEFT, padx=4
+        )
+
+    def _add_entry(self, parent: ttk.Frame, label: str, variable) -> None:
+        row = ttk.Frame(parent, style="App.TFrame")
+        row.pack(fill=tk.X, pady=3)
+        ttk.Label(row, text=label, width=14, style="App.TLabel").pack(side=tk.LEFT)
+        ttk.Entry(row, textvariable=variable).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def _choose_dir(self, variable: tk.StringVar) -> None:
+        selected = filedialog.askdirectory()
+        if selected:
+            variable.set(format_path(selected))
+
+    def _log(self, message: str) -> None:
+        self.log_widget.configure(state=tk.NORMAL)
+        self.log_widget.insert(tk.END, message + "\n")
+        self.log_widget.see(tk.END)
+        self.log_widget.configure(state=tk.DISABLED)
+
+    def _set_running_state(self) -> None:
+        self.start_button.state(["disabled"])
+        self.stop_button.state(["!disabled"])
+        self.status_var.set("Running...")
+        self.status_label.configure(foreground="#4a90e2")
+
+    def _set_idle_state(self) -> None:
+        self.start_button.state(["!disabled"])
+        self.stop_button.state(["disabled"])
+        self.status_var.set("Idle")
+        self.status_label.configure(foreground="#c7ced4")
+
+    def start_processing(self) -> None:
+        if self.process and self.process.poll() is None:
+            messagebox.showinfo("Processing", "A run is already in progress.")
+            return
+
+        command = [
+            sys.executable,
+            format_path(Path(__file__)),
+            "--input",
+            format_path(self.input_var.get()),
+            "--output",
+            format_path(self.output_var.get()),
+            "--tools",
+            format_path(self.tools_var.get()),
+            "--model",
+            self.model_var.get(),
+            "--gpu",
+            str(self.gpu_var.get()),
+            "--max-dim",
+            str(self.max_dim_var.get()),
+        ]
+        if self.overwrite_var.get():
+            command.append("--overwrite")
+        if self.dry_run_var.get():
+            command.append("--dry-run")
+        if self.pause_var.get():
+            command.append("--pause")
+
+        self._log("Running: " + " ".join(command))
+        self.stop_requested = False
+
+        try:
+            self.process = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            )
+        except OSError as exc:
+            self._log(f"Failed to start process: {exc}")
+            return
+
+        self._set_running_state()
+        self.reader_thread = threading.Thread(target=self._stream_output, daemon=True)
+        self.reader_thread.start()
+
+    def stop_processing(self) -> None:
+        if not self.process or self.process.poll() is not None:
+            return
+        self.stop_requested = True
+        self.status_var.set("Stopping...")
+        self.status_label.configure(foreground="#4a90e2")
+        try:
+            self.process.terminate()
+        except OSError as exc:
+            self._log(f"Failed to stop process: {exc}")
+
+    def _stream_output(self) -> None:
+        if not self.process or not self.process.stdout:
+            return
+        for line in self.process.stdout:
+            self.after(0, lambda msg=line.rstrip(): self._log(msg))
+        code = self.process.wait()
+        self.after(0, lambda: self._finish_run(code))
+
+    def _finish_run(self, code: int) -> None:
+        if code == 0:
+            self.status_var.set("Done")
+            self.status_label.configure(foreground="#3fb27f")
+        elif self.stop_requested:
+            self.status_var.set("Stopped")
+            self.status_label.configure(foreground="#ff6b6b")
+        else:
+            self.status_var.set(f"Failed (code {code})")
+            self.status_label.configure(foreground="#ff6b6b")
+
+        self.process = None
+        self.stop_requested = False
+        self._set_idle_state()
+
+
+def launch_gui() -> None:
+    app = ProcessingUI()
+    app.mainloop()
+
+
+def main() -> int:
+    args = parse_args()
+    if args.gui:
+        launch_gui()
+        return 0
+    return run_pipeline(args)
 
 
 if __name__ == "__main__":
