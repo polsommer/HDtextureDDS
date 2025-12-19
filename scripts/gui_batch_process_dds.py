@@ -12,10 +12,11 @@ import os
 import subprocess
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -33,6 +34,14 @@ class BatchGUI(tk.Tk):
         super().__init__()
         self.title("DDS Batch Processor")
         self.geometry("820x720")
+        self.configure(background="#101820")
+
+        self.accent_color = "#4a90e2"
+        self.success_color = "#3fb27f"
+        self.error_color = "#ff6b6b"
+        self.muted_text = "#c7ced4"
+
+        self._configure_styles()
 
         self.model_name_var = tk.StringVar(value=batch_process_dds.DEFAULT_MODEL_NAME)
         self.model_cmd_var = tk.StringVar(
@@ -51,19 +60,55 @@ class BatchGUI(tk.Tk):
 
         self.file_count_var = tk.StringVar(value="Discovered files: 0")
         self.status_var = tk.StringVar(value="Idle")
+        self.progress_var = tk.DoubleVar(value=0)
 
         self._build_layout()
         self._update_file_count()
 
         self.process_thread: Optional[threading.Thread] = None
-        self.progress_var = tk.DoubleVar(value=0)
+        self._set_status("Idle", color=self.muted_text)
+
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        style.configure("App.TFrame", background="#101820")
+        style.configure("App.TLabelframe", background="#101820", foreground=self.muted_text)
+        style.configure("App.TLabelframe.Label", foreground=self.accent_color)
+        style.configure("App.TLabel", background="#101820", foreground=self.muted_text)
+        style.configure("App.Heading.TLabel", font=("Segoe UI", 16, "bold"), foreground="white", background="#101820")
+        style.configure("App.Subheading.TLabel", font=("Segoe UI", 10), foreground=self.muted_text, background="#101820")
+        style.configure("App.TButton", background=self.accent_color, foreground="white", padding=6)
+        style.map(
+            "App.TButton",
+            background=[("active", "#377ccf"), ("disabled", "#4a90e24d")],
+            foreground=[("disabled", "#f0f4f8")],
+        )
+        style.configure(
+            "Accent.Horizontal.TProgressbar",
+            troughcolor="#1b2a38",
+            background=self.accent_color,
+            bordercolor="#1b2a38",
+            lightcolor=self.accent_color,
+            darkcolor=self.accent_color,
+        )
 
     def _build_layout(self) -> None:
-        container = ttk.Frame(self, padding=12)
+        container = ttk.Frame(self, padding=16, style="App.TFrame")
         container.pack(fill=tk.BOTH, expand=True)
 
+        header = ttk.Frame(container, style="App.TFrame")
+        header.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(header, text="DDS Batch Processor", style="App.Heading.TLabel").pack(anchor=tk.W)
+        ttk.Label(
+            header,
+            text="Configure inputs, choose your model, and run processing with a single click.",
+            style="App.Subheading.TLabel",
+        ).pack(anchor=tk.W)
+
         # Paths
-        paths_frame = ttk.LabelFrame(container, text="Paths")
+        paths_frame = ttk.LabelFrame(container, text="Paths", style="App.TLabelframe", padding=10)
         paths_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
 
         self._add_entry_with_button(
@@ -74,20 +119,20 @@ class BatchGUI(tk.Tk):
         )
 
         # Model configuration
-        model_frame = ttk.LabelFrame(container, text="Model")
+        model_frame = ttk.LabelFrame(container, text="Model", style="App.TLabelframe", padding=10)
         model_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
 
         self._add_labeled_entry(model_frame, "Model name", self.model_name_var)
         self._add_labeled_entry(model_frame, "Model command", self.model_cmd_var)
 
         # Flags
-        flags_frame = ttk.Frame(container)
+        flags_frame = ttk.Frame(container, style="App.TFrame")
         flags_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
         ttk.Checkbutton(flags_frame, text="Overwrite", variable=self.overwrite_var).pack(side=tk.LEFT, padx=4)
         ttk.Checkbutton(flags_frame, text="Dry run", variable=self.dry_run_var).pack(side=tk.LEFT, padx=4)
 
         # Git options
-        git_frame = ttk.LabelFrame(container, text="Git options")
+        git_frame = ttk.LabelFrame(container, text="Git options", style="App.TLabelframe", padding=10)
         git_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
 
         ttk.Checkbutton(git_frame, text="Commit results", variable=self.git_commit_var).grid(row=0, column=0, sticky=tk.W)
@@ -98,41 +143,64 @@ class BatchGUI(tk.Tk):
         self._add_grid_entry(git_frame, "Commit message", self.commit_message_var, row=2, column=0, columnspan=2)
 
         # Status and controls
-        status_frame = ttk.Frame(container)
+        status_frame = ttk.Frame(container, style="App.TFrame")
         status_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
 
-        ttk.Label(status_frame, textvariable=self.file_count_var).pack(side=tk.LEFT)
-        ttk.Button(status_frame, text="Refresh count", command=self._update_file_count).pack(side=tk.LEFT, padx=6)
-        ttk.Label(status_frame, textvariable=self.status_var, foreground="blue").pack(side=tk.RIGHT)
+        ttk.Label(status_frame, textvariable=self.file_count_var, style="App.TLabel").pack(side=tk.LEFT)
+        ttk.Button(status_frame, text="Refresh count", command=self._update_file_count, style="App.TButton").pack(
+            side=tk.LEFT, padx=6
+        )
+        self.status_label = ttk.Label(status_frame, textvariable=self.status_var, style="App.TLabel")
+        self.status_label.pack(side=tk.RIGHT)
 
         # Progress bar
-        progress_frame = ttk.Frame(container)
+        progress_frame = ttk.Frame(container, style="App.TFrame")
         progress_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
-        self.progress = ttk.Progressbar(progress_frame, variable=self.progress_var, maximum=100, mode="determinate")
+        self.progress = ttk.Progressbar(
+            progress_frame,
+            variable=self.progress_var,
+            maximum=100,
+            mode="determinate",
+            style="Accent.Horizontal.TProgressbar",
+        )
         self.progress.pack(fill=tk.X, expand=True)
 
         # Log output
-        log_frame = ttk.LabelFrame(container, text="Logs")
+        log_frame = ttk.LabelFrame(container, text="Logs", style="App.TLabelframe", padding=10)
         log_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.log_widget = tk.Text(log_frame, height=20, wrap=tk.WORD, state=tk.DISABLED)
+        self.log_widget = scrolledtext.ScrolledText(
+            log_frame,
+            height=16,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            background="#0f1620",
+            foreground="#e5eef5",
+            insertbackground=self.accent_color,
+        )
         self.log_widget.pack(fill=tk.BOTH, expand=True)
 
         # Run button
-        ttk.Button(container, text="Start processing", command=self.start_processing).pack(fill=tk.X, pady=(10, 0))
+        self.start_button = ttk.Button(
+            container,
+            text="Start processing",
+            command=self.start_processing,
+            style="App.TButton",
+        )
+        self.start_button.pack(fill=tk.X, pady=(10, 0))
 
     def _add_entry_with_button(self, frame: ttk.Frame, label: str, variable: tk.StringVar, callback) -> None:
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=3)
-        ttk.Label(row, text=label, width=16).pack(side=tk.LEFT)
+        ttk.Label(row, text=label, width=16, style="App.TLabel").pack(side=tk.LEFT)
         entry = ttk.Entry(row, textvariable=variable)
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row, text="Browse", command=callback).pack(side=tk.LEFT, padx=4)
+        ttk.Button(row, text="Browse", command=callback, style="App.TButton").pack(side=tk.LEFT, padx=4)
 
     def _add_labeled_entry(self, frame: ttk.Frame, label: str, variable: tk.StringVar) -> None:
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=3)
-        ttk.Label(row, text=label, width=16).pack(side=tk.LEFT)
+        ttk.Label(row, text=label, width=16, style="App.TLabel").pack(side=tk.LEFT)
         ttk.Entry(row, textvariable=variable).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     def _add_grid_entry(
@@ -144,7 +212,7 @@ class BatchGUI(tk.Tk):
         column: int,
         columnspan: int = 1,
     ) -> None:
-        ttk.Label(frame, text=label).grid(row=row, column=column, sticky=tk.W, padx=4, pady=3)
+        ttk.Label(frame, text=label, style="App.TLabel").grid(row=row, column=column, sticky=tk.W, padx=4, pady=3)
         entry = ttk.Entry(frame, textvariable=variable)
         entry.grid(row=row, column=column + 1, sticky=tk.EW, padx=4, pady=3, columnspan=columnspan)
         frame.columnconfigure(column + 1, weight=1)
@@ -166,7 +234,8 @@ class BatchGUI(tk.Tk):
 
     def log(self, message: str) -> None:
         self.log_widget.configure(state=tk.NORMAL)
-        self.log_widget.insert(tk.END, message + "\n")
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_widget.insert(tk.END, f"[{timestamp}] {message}\n")
         self.log_widget.see(tk.END)
         self.log_widget.configure(state=tk.DISABLED)
 
@@ -181,11 +250,13 @@ class BatchGUI(tk.Tk):
             messagebox.showerror("Input missing", "The selected input directory does not exist.")
             return
 
-        self.status_var.set("Running...")
+        self._set_status("Running...", color=self.accent_color)
         self.progress_var.set(0)
         self.progress.configure(mode="indeterminate")
         self.progress.start(10)
         self.log("Starting batch_process_dds.py...")
+
+        self.start_button.state(["disabled"])
 
         self.process_thread = threading.Thread(target=self._run_subprocess, daemon=True)
         self.process_thread.start()
@@ -274,10 +345,16 @@ class BatchGUI(tk.Tk):
             self.log(summary)
         if error:
             self.log(error)
-            self.status_var.set("Failed")
+            self._set_status("Failed", color=self.error_color)
+            self.progress_var.set(0)
         else:
-            self.status_var.set("Done")
+            self._set_status("Done", color=self.success_color)
         self._update_file_count()
+        self.start_button.state(["!disabled"])
+
+    def _set_status(self, text: str, color: str) -> None:
+        self.status_var.set(text)
+        self.status_label.configure(foreground=color)
 
 
 def main() -> None:
