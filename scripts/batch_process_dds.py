@@ -18,6 +18,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+# Default to CPU execution by hiding accelerator devices from common runtimes
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+os.environ.setdefault("ROCM_VISIBLE_DEVICES", "")
+
 
 @dataclass
 class ProcessingResult:
