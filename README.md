@@ -11,6 +11,14 @@ input) for `.dds` files, runs them through a model command, and mirrors the
 outputs into a dedicated output directory. A `processing_manifest.json` is
 written alongside the results to capture run metadata.
 
+- Normal maps (filenames containing `_n.`, `_nm.`, `_normal.`, `_norm.`) are
+  detected automatically and copied without model invocation.
+- Color textures use resolution-based scales: `<700px` → x4, `<1400px` → x2,
+  otherwise copy. Anything at or above `--max-dim` (default `4096` or
+  `DDS_MAX_DIM`) is copied for safety.
+- Per-file width/height, kind, and chosen scale are printed and stored in the
+  manifest for auditing.
+
 Example (copy-only fallback):
 
 ```bash
@@ -27,6 +35,17 @@ export DDS_MODEL_CMD="python -m your_upscaler --input {input} --output {output}"
 python scripts/batch_process_dds.py --input texture --output output --model-name esrgan
 ```
 
+Example (command aware of scale/kind via placeholders and env vars):
+
+```bash
+export DDS_MODEL_CMD="python -m your_upscaler --input {input} --output {output} --scale {scale} --tag {kind}"
+python scripts/batch_process_dds.py --input texture --output output --model-name esrgan --max-dim 4096
+```
+
+The script also exports `DDS_WIDTH`, `DDS_HEIGHT`, `DDS_SCALE`, and `DDS_KIND`
+to the processing command's environment so external tooling can branch on the
+detected metadata.
+
 Optional git automation (requires `git config user.name`/`user.email`):
 
 ```bash
@@ -37,9 +56,14 @@ python scripts/batch_process_dds.py --output output --git-commit --git-push \
 Key flags:
 
 - `--model-cmd`: Command template using `{input}` and `{output}` placeholders.
+- `--max-dim`: Cap resolution; files at/above this size are copied and not
+  upscaled.
 - `--overwrite`: Replace existing files in the output tree.
 - `--dry-run`: Print planned commands without executing them.
 - `--git-commit/--git-push`: Optional archival of outputs back to GitHub.
+
+Additional templating placeholders available to model commands: `{scale}`
+(chosen multiplier), `{kind}` ("normal"/"color"), `{width}`, `{height}`.
 
 The script respects several environment variables (CLI flags take priority):
 

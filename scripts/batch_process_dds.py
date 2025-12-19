@@ -13,6 +13,7 @@ import os
 import shlex
 import subprocess
 import sys
+import struct
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,10 @@ class ProcessingResult:
     source: str
     output: str
     status: str
+    width: int
+    height: int
+    scale: int
+    kind: str
     message: Optional[str] = None
 
 
@@ -51,6 +56,33 @@ DEFAULT_MODEL_CMD = os.environ.get("DDS_MODEL_CMD")
 DEFAULT_GIT_REMOTE = os.environ.get("DDS_GIT_REMOTE", "origin")
 DEFAULT_GIT_BRANCH = os.environ.get("DDS_GIT_BRANCH", "main")
 DEFAULT_OUTPUT_DIR = os.environ.get("DDS_OUTPUT_DIR", "output")
+DEFAULT_MAX_DIM = int(os.environ.get("DDS_MAX_DIM", "4096"))
+
+
+def read_dds_size(path: Path) -> tuple[int, int]:
+    with path.open("rb") as f:
+        if f.read(4) != b"DDS ":
+            raise ValueError("Not a DDS file")
+        header = f.read(124)
+    height = struct.unpack_from("<I", header, 8)[0]
+    width = struct.unpack_from("<I", header, 12)[0]
+    return width, height
+
+
+def is_normal_map(name: str) -> bool:
+    lowered = name.lower()
+    return any(token in lowered for token in ("_n.", "_nm.", "_normal.", "_norm."))
+
+
+def choose_scale(width: int, height: int, max_dim: int) -> int:
+    largest = max(width, height)
+    if largest >= max_dim:
+        return 1
+    if largest < 700:
+        return 4
+    if largest < 1400:
+        return 2
+    return 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,6 +120,15 @@ def parse_args() -> argparse.Namespace:
         "--overwrite",
         action="store_true",
         help="Replace outputs that already exist.",
+    )
+    parser.add_argument(
+        "--max-dim",
+        type=int,
+        default=DEFAULT_MAX_DIM,
+        help=(
+            "Largest dimension threshold used to pick scale factors."
+            " Values at or above this dimension are copied instead of upscaled."
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -144,6 +185,10 @@ def process_file(
     command_template: Optional[str],
     dry_run: bool,
     overwrite: bool,
+    width: int,
+    height: int,
+    scale: int,
+    kind: str,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> ProcessingResult:
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -152,16 +197,57 @@ def process_file(
             source=str(source),
             output=str(output),
             status="skipped",
+            width=width,
+            height=height,
+            scale=scale,
+            kind=kind,
             message="Output exists; use --overwrite to reprocess",
         )
 
-    if command_template:
-        command = command_template.format(input=str(source), output=str(output))
+    if scale == 1:
         if dry_run:
             return ProcessingResult(
                 source=str(source),
                 output=str(output),
                 status="pending",
+                width=width,
+                height=height,
+                scale=scale,
+                kind=kind,
+                message="copy",
+            )
+        output.write_bytes(source.read_bytes())
+        return ProcessingResult(
+            source=str(source),
+            output=str(output),
+            status="ok",
+            width=width,
+            height=height,
+            scale=scale,
+            kind=kind,
+            message="copied",
+        )
+
+    format_kwargs = {
+        "input": str(source),
+        "output": str(output),
+        "scale": scale,
+        "kind": kind,
+        "width": width,
+        "height": height,
+    }
+
+    if command_template:
+        command = command_template.format(**format_kwargs)
+        if dry_run:
+            return ProcessingResult(
+                source=str(source),
+                output=str(output),
+                status="pending",
+                width=width,
+                height=height,
+                scale=scale,
+                kind=kind,
                 message=command,
             )
         try:
@@ -171,12 +257,20 @@ def process_file(
                 source=str(source),
                 output=str(output),
                 status="error",
+                width=width,
+                height=height,
+                scale=scale,
+                kind=kind,
                 message=exc.stderr or exc.stdout,
             )
         return ProcessingResult(
             source=str(source),
             output=str(output),
             status="ok",
+            width=width,
+            height=height,
+            scale=scale,
+            kind=kind,
             message=result.stdout.strip(),
         )
 
@@ -185,10 +279,23 @@ def process_file(
             source=str(source),
             output=str(output),
             status="pending",
+            width=width,
+            height=height,
+            scale=scale,
+            kind=kind,
             message="copy",
         )
     output.write_bytes(source.read_bytes())
-    return ProcessingResult(source=str(source), output=str(output), status="ok", message="copied")
+    return ProcessingResult(
+        source=str(source),
+        output=str(output),
+        status="ok",
+        width=width,
+        height=height,
+        scale=scale,
+        kind=kind,
+        message="copied",
+    )
 
 
 def write_manifest(summary: RunSummary, output_dir: Path) -> None:
@@ -226,20 +333,45 @@ def main() -> int:
 
     dds_files = list(discover_dds_files(input_dir))
     results: List[ProcessingResult] = []
+    base_env = os.environ.copy()
 
     start = datetime.utcnow().isoformat() + "Z"
-    for source in dds_files:
+    for idx, source in enumerate(dds_files, 1):
         rel = source.relative_to(input_dir)
         output = output_dir / rel
+        try:
+            width, height = read_dds_size(source)
+        except Exception:
+            width, height = 0, 0
+        kind = "normal" if is_normal_map(source.name) else "color"
+        scale = 1 if kind == "normal" else choose_scale(width, height, args.max_dim)
+        print(
+            f"[{idx}/{len(dds_files)}] {rel} -> {width}x{height} "
+            f"kind={kind} scale=x{scale}"
+        )
+        env = base_env.copy()
+        env.update(
+            {
+                "DDS_KIND": kind,
+                "DDS_SCALE": str(scale),
+                "DDS_WIDTH": str(width),
+                "DDS_HEIGHT": str(height),
+            }
+        )
         result = process_file(
             source=source,
             output=output,
             command_template=command_template,
             dry_run=args.dry_run,
             overwrite=args.overwrite,
-            extra_env=os.environ.copy(),
+            width=width,
+            height=height,
+            scale=scale,
+            kind=kind,
+            extra_env=env,
         )
         results.append(result)
+        print(f"  status={result.status} message={result.message or ''}\n")
 
     finish = datetime.utcnow().isoformat() + "Z"
     summary = RunSummary(
