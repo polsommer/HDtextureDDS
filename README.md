@@ -54,6 +54,23 @@ GPU devices are masked by default (`CUDA_VISIBLE_DEVICES`/`ROCM_VISIBLE_DEVICES`
 set to empty) so processing runs on CPUs. Set those variables explicitly before
 invoking the script if accelerator access is desired.
 
+### GUI launcher
+
+A lightweight Tkinter GUI is available for local runs. It wraps
+`scripts/batch_process_dds.py` so manifests and processing behavior stay
+consistent while exposing common inputs (source/output directories, model
+command, overwrite/dry-run flags, and git options).
+
+```bash
+python scripts/gui_batch_process_dds.py
+```
+
+Use the browse buttons to pick folders, paste your model command template (using
+`{input}`/`{output}` placeholders), and toggle overwrite/dry-run/git commit
+preferences. The GUI shows the discovered `.dds` count, a progress bar while the
+CLI runs, and a live log area that captures subprocess output and manifest
+summary details.
+
 ### Windows single-file executable
 
 To avoid setting up Python on Windows, bundle the script into a standalone
