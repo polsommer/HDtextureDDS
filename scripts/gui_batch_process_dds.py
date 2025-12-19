@@ -66,6 +66,8 @@ class BatchGUI(tk.Tk):
         self._update_file_count()
 
         self.process_thread: Optional[threading.Thread] = None
+        self.current_process: Optional[subprocess.Popen[str]] = None
+        self.stop_requested = False
         self._set_status("Idle", color=self.muted_text)
 
     def _configure_styles(self) -> None:
@@ -180,14 +182,26 @@ class BatchGUI(tk.Tk):
         )
         self.log_widget.pack(fill=tk.BOTH, expand=True)
 
-        # Run button
+        # Run controls
+        controls = ttk.Frame(container, style="App.TFrame")
+        controls.pack(fill=tk.X, pady=(10, 0))
+
         self.start_button = ttk.Button(
-            container,
+            controls,
             text="Start processing",
             command=self.start_processing,
             style="App.TButton",
         )
-        self.start_button.pack(fill=tk.X, pady=(10, 0))
+        self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        self.stop_button = ttk.Button(
+            controls,
+            text="Stop processing",
+            command=self.stop_processing,
+            style="App.TButton",
+            state=tk.DISABLED,
+        )
+        self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     def _add_entry_with_button(self, frame: ttk.Frame, label: str, variable: tk.StringVar, callback) -> None:
         row = ttk.Frame(frame)
@@ -244,6 +258,8 @@ class BatchGUI(tk.Tk):
             messagebox.showinfo("Processing", "A run is already in progress.")
             return
 
+        self.stop_requested = False
+
         input_dir = Path(self.input_var.get())
         output_dir = Path(self.output_var.get())
         if not input_dir.exists():
@@ -257,9 +273,21 @@ class BatchGUI(tk.Tk):
         self.log("Starting batch_process_dds.py...")
 
         self.start_button.state(["disabled"])
+        self.stop_button.state(["!disabled"])
 
         self.process_thread = threading.Thread(target=self._run_subprocess, daemon=True)
         self.process_thread.start()
+
+    def stop_processing(self) -> None:
+        if not self.current_process or self.current_process.poll() is not None:
+            return
+        self.stop_requested = True
+        self.log("Stopping batch_process_dds.py...")
+        self._set_status("Stopping...", color=self.accent_color)
+        try:
+            self.current_process.terminate()
+        except OSError as exc:
+            self.log(f"Failed to stop process: {exc}")
 
     def _run_subprocess(self) -> None:
         command = self._build_command()
@@ -273,6 +301,7 @@ class BatchGUI(tk.Tk):
                 cwd=str(SCRIPT_DIR.parent),
                 env=os.environ.copy(),
             )
+            self.current_process = process
         except OSError as exc:
             self.after(0, lambda: self._finish_run(error=str(exc)))
             return
@@ -283,7 +312,9 @@ class BatchGUI(tk.Tk):
 
         process.wait()
         manifest_summary = self._read_manifest()
-        if process.returncode == 0:
+        if self.stop_requested:
+            self.after(0, lambda: self._finish_run(error="Processing stopped by user."))
+        elif process.returncode == 0:
             self.after(0, lambda: self._finish_run(summary=manifest_summary))
         else:
             self.after(0, lambda: self._finish_run(error=f"Process exited with code {process.returncode}"))
@@ -341,14 +372,21 @@ class BatchGUI(tk.Tk):
         self.progress.configure(mode="determinate")
         self.progress_var.set(100)
 
+        self.current_process = None
+        self.stop_button.state(["disabled"])
+
         if summary:
             self.log(summary)
-        if error:
+        if self.stop_requested:
+            self._set_status("Stopped", color=self.error_color)
+            self.progress_var.set(0)
+        elif error:
             self.log(error)
             self._set_status("Failed", color=self.error_color)
             self.progress_var.set(0)
         else:
             self._set_status("Done", color=self.success_color)
+        self.stop_requested = False
         self._update_file_count()
         self.start_button.state(["!disabled"])
 
