@@ -54,6 +54,27 @@ GPU devices are masked by default (`CUDA_VISIBLE_DEVICES`/`ROCM_VISIBLE_DEVICES`
 set to empty) so processing runs on CPUs. Set those variables explicitly before
 invoking the script if accelerator access is desired.
 
+### Windows single-file executable
+
+To avoid setting up Python on Windows, bundle the script into a standalone
+`.exe` using PyInstaller:
+
+1. Install [Python 3.10+ for Windows](https://www.python.org/downloads/windows/)
+   and add it to `PATH`.
+2. Install PyInstaller: `python -m pip install pyinstaller`.
+3. From the repository root, run:
+
+   ```powershell
+   python scripts/build_windows_exe.py
+   ```
+
+The executable will be written to `dist/batch_process_dds.exe`. Use it with the
+same CLI flags as the Python script, for example:
+
+```powershell
+dist\batch_process_dds.exe --input texture --output output --model-name custom-model
+```
+
 ## GitHub Actions workflow
 
 `.github/workflows/process-dds.yml` exposes a `workflow_dispatch` entrypoint so
