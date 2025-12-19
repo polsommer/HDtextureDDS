@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=dds-upscale
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
+#SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=08:00:00
@@ -14,7 +13,10 @@
 set -euo pipefail
 
 module load python/3.10 || true
-module load cuda/11.7 || true
+
+# Force CPU execution by masking any available accelerators
+export CUDA_VISIBLE_DEVICES=""
+export ROCM_VISIBLE_DEVICES=""
 
 if [ -n "${DDS_VENV:-}" ]; then
   source "${DDS_VENV}/bin/activate"

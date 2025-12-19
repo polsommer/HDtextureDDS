@@ -50,6 +50,10 @@ The script respects several environment variables (CLI flags take priority):
 - `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`: Recommended when committing in CI.
 - `GITHUB_TOKEN`: Required by GitHub Actions when push is requested.
 
+GPU devices are masked by default (`CUDA_VISIBLE_DEVICES`/`ROCM_VISIBLE_DEVICES`
+set to empty) so processing runs on CPUs. Set those variables explicitly before
+invoking the script if accelerator access is desired.
+
 ## GitHub Actions workflow
 
 `.github/workflows/process-dds.yml` exposes a `workflow_dispatch` entrypoint so
@@ -66,8 +70,8 @@ folder, overwrite toggle, and git commit/push options. The workflow:
 ## SWG-RPI-Cluster job template
 
 `cluster/swg_rpi_job.sh` is a Slurm submission script tuned for the
-SWG-RPI-Cluster GPU partition. Default resources request 1 GPU, 8 CPUs, 32 GB
-RAM, and an 8-hour wall clock. Edit the `#SBATCH` lines as needed.
+SWG-RPI-Cluster CPU partition. Default resources request 8 CPUs, 32 GB RAM, and
+an 8-hour wall clock. Edit the `#SBATCH` lines as needed.
 
 Usage:
 
@@ -95,9 +99,9 @@ sbatch cluster/swg_rpi_job.sh
 Dependencies on the cluster:
 
 - Python 3.10+ (loaded via `module load python/3.10`).
-- CUDA drivers/modules appropriate for your upscaler (`module load cuda/11.7`).
 - Any model-specific wheels or binaries available in the active environment
-  (`DDS_VENV` is respected when set).
+  (`DDS_VENV` is respected when set). GPU drivers are not required; the
+  submission script masks accelerators so processing stays on CPUs.
 - Git credentials if committing/pushing from the job (e.g., SSH agent or
   `GITHUB_TOKEN` with `git remote set-url`).
 
