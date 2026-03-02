@@ -253,6 +253,7 @@ def process_file(
         try:
             result = run_command(command, env=extra_env)
         except subprocess.CalledProcessError as exc:
+            error_output = exc.stderr or exc.stdout
             return ProcessingResult(
                 source=str(source),
                 output=str(output),
@@ -261,7 +262,7 @@ def process_file(
                 height=height,
                 scale=scale,
                 kind=kind,
-                message=exc.stderr or exc.stdout,
+                message=error_output,
             )
         return ProcessingResult(
             source=str(source),
