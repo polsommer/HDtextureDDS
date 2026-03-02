@@ -164,7 +164,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def discover_dds_files(root: Path) -> Iterable[Path]:
-    return root.rglob("*.dds")
+    return (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() == ".dds")
 
 
 def run_command(command: str, env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
