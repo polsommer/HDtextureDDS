@@ -51,6 +51,7 @@ class BatchGUI(tk.Tk):
         self.output_var = tk.StringVar(value=format_path(batch_process_dds.DEFAULT_OUTPUT_DIR))
         self.overwrite_var = tk.BooleanVar(value=False)
         self.dry_run_var = tk.BooleanVar(value=False)
+        self.output_format_var = tk.StringVar(value="dds")
 
         self.git_commit_var = tk.BooleanVar(value=False)
         self.git_push_var = tk.BooleanVar(value=False)
@@ -132,6 +133,14 @@ class BatchGUI(tk.Tk):
         flags_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
         ttk.Checkbutton(flags_frame, text="Overwrite", variable=self.overwrite_var).pack(side=tk.LEFT, padx=4)
         ttk.Checkbutton(flags_frame, text="Dry run", variable=self.dry_run_var).pack(side=tk.LEFT, padx=4)
+        ttk.Label(flags_frame, text="Output format", style="App.TLabel").pack(side=tk.LEFT, padx=(12, 4))
+        ttk.Combobox(
+            flags_frame,
+            textvariable=self.output_format_var,
+            values=("dds", "png"),
+            state="readonly",
+            width=8,
+        ).pack(side=tk.LEFT, padx=4)
 
         # Git options
         git_frame = ttk.LabelFrame(container, text="Git options", style="App.TLabelframe", padding=10)
@@ -355,6 +364,7 @@ class BatchGUI(tk.Tk):
             command.append("--overwrite")
         if self.dry_run_var.get():
             command.append("--dry-run")
+        command.extend(["--output-format", self.output_format_var.get()])
         if self.git_commit_var.get():
             command.append("--git-commit")
         if self.git_push_var.get():
