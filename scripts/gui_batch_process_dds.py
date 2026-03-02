@@ -243,7 +243,7 @@ class BatchGUI(tk.Tk):
         if not input_dir.exists():
             self.file_count_var.set("Discovered files: 0 (input missing)")
             return
-        count = sum(1 for _ in batch_process_dds.discover_dds_files(input_dir))
+        count = sum(1 for path in input_dir.rglob("*") if path.is_file() and path.suffix.lower() == ".dds")
         self.file_count_var.set(f"Discovered files: {count}")
 
     def log(self, message: str) -> None:
