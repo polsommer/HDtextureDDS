@@ -182,6 +182,12 @@ def discover_dds_files(root: Path) -> Iterable[Path]:
 
 
 def run_command(command: str, env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
+    # On Windows, many CLI tools emit output using the active OEM code page.
+    # Decoding with ``encoding='oem'`` avoids mojibake in localized errors like
+    # "Adgang nægtet." that would otherwise appear garbled in logs/manifests.
+    encoding_kwargs: Dict[str, str] = {}
+    if os.name == "nt":
+        encoding_kwargs = {"encoding": "oem", "errors": "replace"}
     return subprocess.run(
         command,
         shell=True,
@@ -190,6 +196,7 @@ def run_command(command: str, env: Optional[Dict[str, str]] = None) -> subproces
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        **encoding_kwargs,
     )
 
 
