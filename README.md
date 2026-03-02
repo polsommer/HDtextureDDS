@@ -46,6 +46,18 @@ The script also exports `DDS_WIDTH`, `DDS_HEIGHT`, `DDS_SCALE`, and `DDS_KIND`
 to the processing command's environment so external tooling can branch on the
 detected metadata.
 
+
+Example (DDS to PNG output using bundled texconv on Windows):
+
+```bash
+python scripts/batch_process_dds.py \
+  --input texture \
+  --output output_png \
+  --output-format png \
+  --texconv-path tools/texconv.exe \
+  --model-name custom-model
+```
+
 Optional git automation (requires `git config user.name`/`user.email`):
 
 ```bash
@@ -56,6 +68,8 @@ python scripts/batch_process_dds.py --output output --git-commit --git-push \
 Key flags:
 
 - `--model-cmd`: Command template using `{input}` and `{output}` placeholders.
+- `--output-format`: Choose `dds` (default) or `png` output artifacts.
+- `--texconv-path`: Path to `texconv.exe` used for DDS→PNG conversion when PNG output is requested.
 - `--max-dim`: Cap resolution; files at/above this size are copied and not
   upscaled.
 - `--overwrite`: Replace existing files in the output tree.
@@ -99,6 +113,11 @@ summary details.
 
 To avoid setting up Python on Windows, bundle the script into a standalone
 `.exe` using PyInstaller:
+
+When using `--output-format png` on Windows, install/copy Microsoft `texconv.exe`
+into `tools/texconv.exe` (or pass an explicit `--texconv-path`). The PNG export
+path depends on this converter for direct DDS decode/copy and post-processing
+conversion after model runs.
 
 1. Install [Python 3.10+ for Windows](https://www.python.org/downloads/windows/)
    and add it to `PATH`.

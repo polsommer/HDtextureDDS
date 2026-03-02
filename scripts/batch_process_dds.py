@@ -49,6 +49,7 @@ class RunSummary:
     finished_at: str
     dry_run: bool
     overwrite: bool
+    output_format: str
 
 
 DEFAULT_MODEL_NAME = os.environ.get("DDS_MODEL_NAME", "custom-model")
@@ -57,6 +58,7 @@ DEFAULT_GIT_REMOTE = os.environ.get("DDS_GIT_REMOTE", "origin")
 DEFAULT_GIT_BRANCH = os.environ.get("DDS_GIT_BRANCH", "main")
 DEFAULT_OUTPUT_DIR = os.environ.get("DDS_OUTPUT_DIR", "output")
 DEFAULT_MAX_DIM = int(os.environ.get("DDS_MAX_DIM", "4096"))
+DEFAULT_TEXCONV_PATH = Path(__file__).resolve().parent.parent / "tools" / "texconv.exe"
 
 
 def read_dds_size(path: Path) -> tuple[int, int]:
@@ -131,6 +133,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--output-format",
+        choices=("dds", "png"),
+        default="dds",
+        help="Write processed assets as DDS (default) or PNG.",
+    )
+    parser.add_argument(
+        "--texconv-path",
+        type=Path,
+        default=DEFAULT_TEXCONV_PATH,
+        help="Path to texconv executable used for DDS→PNG conversion.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the commands without executing them.",
@@ -179,6 +193,13 @@ def run_command(command: str, env: Optional[Dict[str, str]] = None) -> subproces
     )
 
 
+def build_texconv_dds_to_png_command(texconv_path: Path, source_dds: Path, output_png: Path) -> str:
+    return (
+        f"{shlex.quote(str(texconv_path))} -ft png -y "
+        f"-o {shlex.quote(str(output_png.parent))} {shlex.quote(str(source_dds))}"
+    )
+
+
 def process_file(
     source: Path,
     output: Path,
@@ -189,6 +210,8 @@ def process_file(
     height: int,
     scale: int,
     kind: str,
+    output_format: str,
+    texconv_path: Path,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> ProcessingResult:
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +228,43 @@ def process_file(
         )
 
     if scale == 1:
+        if output_format == "png":
+            command = build_texconv_dds_to_png_command(texconv_path, source, output)
+            if dry_run:
+                return ProcessingResult(
+                    source=str(source),
+                    output=str(output),
+                    status="pending",
+                    width=width,
+                    height=height,
+                    scale=scale,
+                    kind=kind,
+                    message=command,
+                )
+            try:
+                run_command(command, env=extra_env)
+            except subprocess.CalledProcessError as exc:
+                error_output = exc.stderr or exc.stdout
+                return ProcessingResult(
+                    source=str(source),
+                    output=str(output),
+                    status="error",
+                    width=width,
+                    height=height,
+                    scale=scale,
+                    kind=kind,
+                    message=error_output,
+                )
+            return ProcessingResult(
+                source=str(source),
+                output=str(output),
+                status="ok",
+                width=width,
+                height=height,
+                scale=scale,
+                kind=kind,
+                message="converted dds->png",
+            )
         if dry_run:
             return ProcessingResult(
                 source=str(source),
@@ -237,7 +297,11 @@ def process_file(
         "height": height,
     }
 
+    dds_output = output if output_format == "dds" else output.with_suffix(".dds")
+
     if command_template:
+        dds_output.parent.mkdir(parents=True, exist_ok=True)
+        format_kwargs["output"] = str(dds_output)
         command = command_template.format(**format_kwargs)
         if dry_run:
             return ProcessingResult(
@@ -264,6 +328,35 @@ def process_file(
                 kind=kind,
                 message=error_output,
             )
+        if output_format == "dds":
+            return ProcessingResult(
+                source=str(source),
+                output=str(output),
+                status="ok",
+                width=width,
+                height=height,
+                scale=scale,
+                kind=kind,
+                message=result.stdout.strip(),
+            )
+
+        conversion_command = build_texconv_dds_to_png_command(texconv_path, dds_output, output)
+        try:
+            run_command(conversion_command, env=extra_env)
+        except subprocess.CalledProcessError as exc:
+            error_output = exc.stderr or exc.stdout
+            return ProcessingResult(
+                source=str(source),
+                output=str(output),
+                status="error",
+                width=width,
+                height=height,
+                scale=scale,
+                kind=kind,
+                message=error_output,
+            )
+        if dds_output.exists():
+            dds_output.unlink()
         return ProcessingResult(
             source=str(source),
             output=str(output),
@@ -286,7 +379,37 @@ def process_file(
             kind=kind,
             message="copy",
         )
-    output.write_bytes(source.read_bytes())
+    if output_format == "dds":
+        output.write_bytes(source.read_bytes())
+        return ProcessingResult(
+            source=str(source),
+            output=str(output),
+            status="ok",
+            width=width,
+            height=height,
+            scale=scale,
+            kind=kind,
+            message="copied",
+        )
+
+    dds_output.write_bytes(source.read_bytes())
+    conversion_command = build_texconv_dds_to_png_command(texconv_path, dds_output, output)
+    try:
+        run_command(conversion_command, env=extra_env)
+    except subprocess.CalledProcessError as exc:
+        error_output = exc.stderr or exc.stdout
+        return ProcessingResult(
+            source=str(source),
+            output=str(output),
+            status="error",
+            width=width,
+            height=height,
+            scale=scale,
+            kind=kind,
+            message=error_output,
+        )
+    if dds_output.exists() and dds_output != output:
+        dds_output.unlink()
     return ProcessingResult(
         source=str(source),
         output=str(output),
@@ -295,7 +418,7 @@ def process_file(
         height=height,
         scale=scale,
         kind=kind,
-        message="copied",
+        message="converted dds->png",
     )
 
 
@@ -312,6 +435,7 @@ def write_manifest(summary: RunSummary, output_dir: Path) -> None:
                 "finished_at": summary.finished_at,
                 "dry_run": summary.dry_run,
                 "overwrite": summary.overwrite,
+                "output_format": summary.output_format,
                 "processed": [asdict(item) for item in summary.processed],
             },
             indent=2,
@@ -340,6 +464,8 @@ def main() -> int:
     for idx, source in enumerate(dds_files, 1):
         rel = source.relative_to(input_dir)
         output = output_dir / rel
+        if args.output_format == "png":
+            output = output.with_suffix(".png")
         try:
             width, height = read_dds_size(source)
         except Exception:
@@ -369,6 +495,8 @@ def main() -> int:
             height=height,
             scale=scale,
             kind=kind,
+            output_format=args.output_format,
+            texconv_path=args.texconv_path,
             extra_env=env,
         )
         results.append(result)
@@ -385,6 +513,7 @@ def main() -> int:
         finished_at=finish,
         dry_run=args.dry_run,
         overwrite=args.overwrite,
+        output_format=args.output_format,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
